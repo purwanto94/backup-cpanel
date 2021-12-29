@@ -1,0 +1,94 @@
+#!/bin/bash
+
+# Tanggal hari ini
+readonly TANGGAL="$(date '+%d')"
+
+# Daily atau monthly
+if [ $TANGGAL == 01 ]
+then
+        PERIODE="monthly"
+else
+        PERIODE="daily"
+fi
+
+# Jumlah data backup
+readonly DAILY="3"
+readonly MONTHLY="1"
+
+# port SSH
+readonly PORT="${4}"
+
+# Bandwith (KBPS)
+readonly BANDWITH="20000"
+
+# Email laporan
+readonly EMAIL="email@domain.com"
+
+readonly USER="${1}"
+readonly IP_SERVER="${2}"
+readonly BACKUP_DIR="${3}"
+readonly CPANEL_DATA="/home/backup-tmp/cpmove-${USER}"
+readonly SOURCE_DIR="/home/${USER}"
+readonly DATETIME="$(date '+%Y-%m-%d')"
+readonly REMOTE_SERVER="root@${IP_SERVER}"
+readonly BACKUP_PATH="${BACKUP_DIR}/${USER}/${PERIODE}-${DATETIME}"
+readonly LATEST_LINK="${BACKUP_DIR}/${USER}/latest"
+readonly SSH="ssh ${REMOTE_SERVER} -p ${PORT}"
+readonly DAYMONTHLY="$((MONTHLY*45))"
+readonly EXCLUDE="/bashscripts/exclude.txt"
+
+# trap error
+abort()
+{
+echo "Backup akun $1 tanggal $2 gagal" | mail -s "GAGAL - Backup $1 $2" -r "$1@${HOSTNAME}" email@domain.com
+}
+trap 'abort ${USER} ${DATETIME}' 0
+set -e
+
+# pkgacct incremental
+${SSH} "/usr/local/cpanel/scripts/pkgacct --incremental --skiphomedir ${USER} /home/backup-tmp/"
+
+# mkdir folder backup
+mkdir -p "${BACKUP_PATH}"
+
+# rsync cpanel data
+rsync24 -av --progress --delete --exclude '/homedir' --bwlimit="$BANDWITH" \
+  -e "ssh -p ${PORT}" \
+  "$REMOTE_SERVER:${CPANEL_DATA}/" \
+  --link-dest "${LATEST_LINK}/" \
+  "${BACKUP_PATH}/"
+
+# send email
+#if [ "$?" -eq "0" ]
+#then
+#echo "Backup akun ${USER} tanggal ${DATETIME} sukses" | mail -s "SUKSES - Backup ${USER} ${DATETIME}" -r "${USER}@${HOSTNAME}" ${EMAIL}
+#else
+#echo "Backup akun ${USER} tanggal ${DATETIME} gagal" | mail -s "GAGAL - Backup ${1} ${DATETIME}" -r "${USER}@${HOSTNAME}" ${EMAIL}
+#fi
+
+# rsync homedir
+rsync24 -av --delete --progress --exclude-from="${EXCLUDE}" --bwlimit="$BANDWITH" \
+  -e "ssh -p ${PORT}" \
+  "$REMOTE_SERVER:${SOURCE_DIR}/" \
+  --link-dest "${LATEST_LINK}/homedir/" \
+  ${BACKUP_PATH}/homedir/
+
+# remove latest link dan remove data backup lama
+rm -rf "${LATEST_LINK}" \
+&& ln -s "${BACKUP_PATH}" "${LATEST_LINK}" \
+&& find ${BACKUP_DIR}/${USER}/* -maxdepth 0 -name "daily-*" -type d -mtime +${DAILY} -exec rm -rf {} \; \
+&& find ${BACKUP_DIR}/${USER}/* -maxdepth 0 -name "monthly-*" -type d -mtime +${DAYMONTHLY} -exec rm -rf {} \;
+
+# remove backup tmp
+${SSH} "rm -rf "${CPANEL_DATA}""
+
+# Send email sukses
+echo "Backup akun ${USER} tanggal ${DATETIME} sukses" | mail -s "SUKSES - Backup ${USER} ${DATETIME}" -r "${USER}@${HOSTNAME}" ${EMAIL}
+
+# Send laporan mingguan
+#if [[ $(date +%u) -gt 6 ]]; then
+#    ls -ld ${BACKUP_DIR}/${USER}/* > /bashscripts/report.txt && cat /bashscripts/report.txt | mail -s "Laporan Mingguan Backup ${USER}" -r "${USER}@${HOSTNAME}" email@domain.com
+#    exit
+#fi
+
+trap : 0
